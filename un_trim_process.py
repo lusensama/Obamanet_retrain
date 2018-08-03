@@ -13,7 +13,7 @@ parser.add_argument("-extract_audio_kp", "--extract_audio_kp", type=bool, defaul
 
 if __name__ == '__main__':
 
-    inputVideoFolder = 'input_videos/'
+    inputVideoFolder = 'videos_cut/'
     audioFolder = 'extracted_audios/'
     imageFolder = 'extracted_images/'
     imgkpFolder = 'image_kp_raw/'

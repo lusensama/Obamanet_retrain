@@ -11,3 +11,9 @@ ssh szl5689@172.29.200.10
 ssh ctucker@172.25.3.204
 /media/ctucker/MyBookDuo/obamasyn
 youtube-dl --batch-file obama_addresses.txt -o 'videos/%(autonumber)s.%(ext)s' -f "best[height=720]"
+
+videos=>trim -- video_cut
+video_cut =>un_trim_processe -- images, audio, keypoints, pca
+extracted_images =>crop -- crop_img
+crop_img=>prepare_test_video -- pix2pix input
+audio_kp=>train.py
