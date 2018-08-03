@@ -8,12 +8,12 @@ import argparse
 import imutils
 import dlib
 import cv2
-
+import subprocess
 
 from glob import glob
 import os
 
-images = glob('crop_frame/*.jpg')
+images = glob('extracted_images/*.bmp')
 
 
 
@@ -89,6 +89,9 @@ for img in images:
     # show the output image with the face detections + facial landmarks
     # cv2.namedWindow('Output', cv2.WINDOW_NORMAL)
     # cv2.imshow("Output", crop_img)
+    if not(os.path.exists('crop_img')):
+        # Create directory
+        subprocess.call('mkdir -p ' + 'crop_img', shell=True)
     cv2.imwrite('crop_img/{:05}.jpg'.format(name), crop_img)
 
     name+=1

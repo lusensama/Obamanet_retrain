@@ -19,7 +19,21 @@ if __name__ == '__main__':
     imgkpFolder = 'image_kp_raw/'
     audkpFolder = 'audio_kp/'
     pcaFolder = 'pca/'
-
+    if not(os.path.exists(audioFolder)):
+        # Create directory
+        subprocess.call('mkdir -p ' + audioFolder, shell=True)
+    if not(os.path.exists(imageFolder)):
+        # Create directory
+        subprocess.call('mkdir -p ' + imageFolder, shell=True)
+    if not(os.path.exists(imgkpFolder)):
+        # Create directory
+        subprocess.call('mkdir -p ' + imgkpFolder, shell=True)
+    if not(os.path.exists(audkpFolder)):
+        # Create directory
+        subprocess.call('mkdir -p ' + audkpFolder, shell=True)
+    if not(os.path.exists(pcaFolder)):
+        # Create directory
+        subprocess.call('mkdir -p ' + pcaFolder, shell=True)
 # if (args.extract_images):
 
     inputFolder = inputVideoFolder
@@ -52,7 +66,7 @@ if __name__ == '__main__':
             img = cv2.imread(imglist[i])
             x = int(np.floor((img.shape[1]-256)/2))
             crop_img = img[0:256, x:x+256]
-            cv2.imwrite( imglist[i][0:-len('.bmp')] + '.jpeg', crop_img)
+            cv2.imwrite( imglist[i][0:-len('.bmp')] + '.jpg', crop_img)
 
         subprocess.call('rm -rf '+ outputFolder + num + '/*.bmp', shell=True)
 

@@ -355,10 +355,14 @@ for file in tqdm(filenames):
 
 	outputNamePatch = outputFolderForpix2pix + file[len(inputFolder):-len('.jpg')] + '.png'
 	cv2.imwrite(outputNamePatch, patch_img)
+if not(os.path.exists(saveFilename)):
+	os.makedirs(os.path.dirname(saveFilename), exist_ok=True)
+	pkl.dump(d, open(saveFilename, "wb"))
+else:
+	# save the extracted keypoints
+	with open(saveFilename, "wb") as output_file:
+		pkl.dump(d, output_file)
 
-# save the extracted keypoints
-with open(saveFilename, "wb") as output_file:
-	pkl.dump(d, output_file)
 
 	
 
