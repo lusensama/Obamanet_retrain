@@ -8,8 +8,8 @@ python processing.py -extract_images=true -extract_audio=true
 python pix2pix.py --mode train --output_dir output_pix2pix --max_epochs 200 --input_dir pix2pix_input/train --which_direction AtoB
 
 ssh szl5689@172.29.200.10
-ssh ctucker@172.25.3.204
-/media/ctucker/MyBookDuo/obamasyn
+ssh ctucker@172.25.4.39
+/media/ctucker/MyBookDuo/SenLu/Obamanet/data/Obamanet_retrain
 youtube-dl --batch-file obama_addresses.txt -o 'videos/%(autonumber)s.%(ext)s' -f "best[height=720]"
 
 videos=>trim -- video_cut
