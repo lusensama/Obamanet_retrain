@@ -14,7 +14,7 @@ from time import time
 #########################################################################################
 
 time_delay = 20 #0
-look_back = 50
+look_back = 98
 n_epoch = 98
 n_videos = 98
 tbCallback = TensorBoard(log_dir="logs/{}".format(time())) # TensorBoard(log_dir='./Graph', histogram_freq=0, batch_size=n_batch, write_graph=True, write_images=True)
