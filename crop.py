@@ -86,14 +86,14 @@ for img in images:
     # cv2.rectangle(image, (tlx, tly), (brx, bry), (0, 0, 0), thickness=-1)
     if rects != None:
         crop_img = image[max(0, (cy - 128)):max(256, (cy + 128)), max(0, (cx -128)):max(256, (cx + 128))]
-    # show the output image with the face detections + facial landmarks
-    # cv2.namedWindow('Output', cv2.WINDOW_NORMAL)
-    # cv2.imshow("Output", crop_img)
-    if not(os.path.exists('crop_img')):
-        # Create directory
-        subprocess.call('mkdir -p ' + 'crop_img', shell=True)
-    cv2.imwrite('crop_img/{:05}.jpg'.format(name), crop_img)
+        # show the output image with the face detections + facial landmarks
+        # cv2.namedWindow('Output', cv2.WINDOW_NORMAL)
+        # cv2.imshow("Output", crop_img)
+        if not(os.path.exists('crop_img')):
+            # Create directory
+            subprocess.call('mkdir -p ' + 'crop_img', shell=True)
+        cv2.imwrite('crop_img/{:06}.jpg'.format(name), crop_img)
 
-    name+=1
+        name+=1
     # os.remove(img)
 # cv2.waitKey(0)

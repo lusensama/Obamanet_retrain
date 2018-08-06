@@ -9,7 +9,9 @@ python pix2pix.py --mode train --output_dir output_pix2pix --max_epochs 200 --in
 
 ssh szl5689@172.29.200.10
 ssh ctucker@172.25.4.39
-/media/ctucker/MyBookDuo/SenLu/Obamanet/data/Obamanet_retrain
+/media/ctucker/MyBookDuo/SenLu/Obamanet/data/Obamanet_retrain/audio_kp/audio_kp98_mel.pickle
+/media/ctucker/MyBookDuo/SenLu/Obamanet/data/Obamanet_retrain/image_kp_raw/kp1.pickle
+scp ctucker@172.25.4.39:/media/ctucker/MyBookDuo/SenLu/Obamanet/data/Obamanet_retrain/pca/pca1.pickle D:\Research\obamatrash\test_train
 youtube-dl --batch-file obama_addresses.txt -o 'videos/%(autonumber)s.%(ext)s' -f "best[height=720]"
 
 videos=>trim -- video_cut
