@@ -1,291 +1,438 @@
-from utils import *
-np.seterr(divide='ignore', invalid='ignore')
+# # Get keypoint data from the images and prepare for pix2pix
+# from utils import *
+''''''
+from __future__ import division, print_function
+import matplotlib.pyplot as plt
+from glob import glob
+import subprocess
+from webvtt import WebVTT
+import argparse
+import os
+import pickle as pkl
+from tqdm import tqdm
 
-EPSILON = 1e-8
+from sklearn.decomposition import PCA
+import numpy as np
+from shutil import rmtree
+import soundfile as sf
+import pyworld as pw
+import scipy.io.wavfile as wav
+from python_speech_features import logfbank
 
-parser = argparse.ArgumentParser()
-parser.add_argument("-trim", "--trim", type=bool, default=False)
-parser.add_argument("-extract_images", "--extract_images", type=bool, default=False)
-parser.add_argument("-extract_audio", "--extract_audio", type=bool, default=False)
-parser.add_argument("-extract_image_kp", "--extract_image_kp", type=bool, default=False)
-parser.add_argument("-extract_pca", "--extract_pca", type=bool, default=False)
-parser.add_argument("-extract_audio_kp", "--extract_audio_kp", type=bool, default=False)
+import cv2
+import sys
+import dlib
+from skimage import io
+from imutils import face_utils
+import imutils
 
-if __name__ == '__main__':
+from keras.models import Sequential
+from keras.layers import Dense, LSTM, Dropout, Embedding, Lambda, TimeDistributed
+import keras.backend as K
+from keras.preprocessing.sequence import pad_sequences
+from keras.models import load_model
+import keras
+from sklearn.preprocessing import MinMaxScaler
 
-	args = parser.parse_args()
-	
-	if (args.trim):
+import gc
+import time
 
-		inputFolder = 'videos/'
-		outputFolder = 'trimmed_videos/'
-		video_width = 456
+predictor_path = 'shape_predictor_68_face_landmarks.dat'
 
-		if not(os.path.exists(outputFolder)):
-			# Create directory
-			subprocess.call('mkdir -p ' + outputFolder, shell=True)
+detector = dlib.get_frontal_face_detector()
+predictor = dlib.shape_predictor(predictor_path)
 
-		for i in range(2, 21):
-			num = str(i).rjust(5, '0')
-			captions_filename = 'captions/'+ num +'.en.vtt'
-			inputfilename = inputFolder + num + '.mp4 '
-			captions = WebVTT().read(captions_filename)
+#####################################################################
 
-			print('Total Length of captions is', len(captions))
+n_batch = 1  # Conservative guess on the batchsize
+time_delay = 10
+length = 60  # More than this and the LSTM becomes retard
 
-			for idx, caption in enumerate(captions):
-				outputfilename = outputFolder + num + '-' + str(idx).rjust(3, '0') + '.mp4'
-				ss = caption.start
-				end = caption.end
-				t = int(round(get_sec(end) - get_sec(ss)))
-				print('index: ', idx, 'Text: ', caption.text, 'Time: ', t)
-				cmd = 'ffmpeg -i ' + inputfilename + '-vf scale='+ str(video_width) + ':256 ' + '-ss ' + str(ss) + ' -t ' + str(t) + ' -acodec copy ' + outputfilename
-				subprocess.call(cmd, shell=True)
 
-	if (args.extract_images):
+#####################################################################
 
-		inputFolder = 'trimmed_videos/'
-		outputFolder = 'images/'
+# trim_time = 3.0
+# delay_in_seconds = 0 # 0.200
+# time_delay = int(np.ceil(delay_in_seconds * 100)) # 150 ms and 200 fps
+# limit_up = int(trim_time*100) # 500
+# train_val_ratio = 0.8
+# batchSize = 100
 
-		if not(os.path.exists(outputFolder)):
-			# Create directory
-			subprocess.call('mkdir -p ' + outputFolder, shell=True)
+def get_facial_landmarks(filename):
+	image = io.imread(filename);
+	# detect face(s)
+	dets = detector(image, 1);
+	shape = np.empty([1, 1])
+	for k, d in enumerate(dets):
+		# Get the landmarks/parts for the face in box d.
+		shape = predictor(image, d);
+		shape = face_utils.shape_to_np(shape);
 
-		filelist = sorted(glob(inputFolder+'/*.mp4'))
+	return shape;
 
-		print('Length of filelist: ', len(filelist))
+def get_facial_landmarks_img(img):
+	# detect face(s)
+	dets = detector(img, 1);
+	shape = np.empty([1,1])
+	for k, d in enumerate(dets):
+		# Get the landmarks/parts for the face in box d.
+		shape = predictor(img, d);
+		shape = face_utils.shape_to_np(shape);
 
-		for idx, filename in tqdm(enumerate(filelist)):
-			num = filename[len(inputFolder):-len('.mp4')]
-			print('Num: ', num)
-			# Create this directory if it doesn't exist
-			if not(os.path.exists(outputFolder+num)):
-				# Create directory
-				subprocess.call('mkdir -p ' + outputFolder+num, shell=True)
+	return shape;
 
-			# Create the images
-			cmd = 'ffmpeg -i ' + filename + ' -vf scale=-1:256 '+ outputFolder + num + '-%05d' + '.bmp'
-			subprocess.call(cmd, shell=True)
+def getTilt(keypoints_mn):
+	# Remove in plane rotation using the eyes
+	eyes_kp = np.array(keypoints_mn[36:47])
+	x = eyes_kp[:, 0]
+	y = -1 * eyes_kp[:, 1]
+	# print('X:', x)
+	# print('Y:', y)
+	m = np.polyfit(x, y, 1)
+	tilt = np.degrees(np.arctan(m[0]))
+	return tilt
 
-			# Cropping
-			imglist = sorted(glob( outputFolder + num + '/*.bmp'))
 
-			for i in range(len(imglist)):
-				img = cv2.imread(imglist[i])
-				x = int(np.floor((img.shape[1]-256)/2))
-				crop_img = img[0:256, x:x+256]
-				cv2.imwrite( imglist[i][0:-len('.bmp')] + '.jpeg', crop_img)
+def drawLips(keypoints, new_img, c=(255, 255, 255), th=1, show=False):
+	keypoints = np.float32(keypoints)
 
-			subprocess.call('rm -rf '+ outputFolder + num + '/*.bmp', shell=True)
+	for i in range(48, 59):
+		cv2.line(new_img, tuple(keypoints[i]), tuple(keypoints[i + 1]), color=c, thickness=th)
+	cv2.line(new_img, tuple(keypoints[48]), tuple(keypoints[59]), color=c, thickness=th)
+	cv2.line(new_img, tuple(keypoints[48]), tuple(keypoints[60]), color=c, thickness=th)
+	cv2.line(new_img, tuple(keypoints[54]), tuple(keypoints[64]), color=c, thickness=th)
+	cv2.line(new_img, tuple(keypoints[67]), tuple(keypoints[60]), color=c, thickness=th)
+	for i in range(60, 67):
+		cv2.line(new_img, tuple(keypoints[i]), tuple(keypoints[i + 1]), color=c, thickness=th)
 
-	if (args.extract_audio):
+	if (show == True):
+		cv2.imshow('lol', new_img)
+		cv2.waitKey(10000)
 
-		inputFolder = 'trimmed_videos/'
-		outputFolder = 'audios/'
 
-		if not(os.path.exists(outputFolder)):
-			# Create directory
-			subprocess.call('mkdir -p ' + outputFolder, shell=True)
+def getKeypointFeatures(keypoints):
+	# Mean Normalize the keypoints wrt the center of the mouth
+	# Leads to face position invariancy
+	mouth_kp_mean = np.average(keypoints[48:67], 0)
+	keypoints_mn = keypoints - mouth_kp_mean
+	if(len(keypoints_mn)==1):
+		return None
+	# Remove tilt
+	x_dash = keypoints_mn[:, 0]
+	y_dash = keypoints_mn[:, 1]
+	theta = np.deg2rad(getTilt(keypoints_mn))
+	c = np.cos(theta);
+	s = np.sin(theta)
+	x = x_dash * c - y_dash * s  # x = x'cos(theta)-y'sin(theta)
+	y = x_dash * s + y_dash * c  # y = x'sin(theta)+y'cos(theta)
+	keypoints_tilt = np.hstack((x.reshape((-1, 1)), y.reshape((-1, 1))))
 
-		filelist = sorted(glob(inputFolder+'/*.mp4'))
+	# Normalize
+	N = np.linalg.norm(keypoints_tilt, 2)
+	return [keypoints_tilt / N, N, theta, mouth_kp_mean]
 
-		for file in filelist:
-			cmd = 'ffmpeg -i ' + file + ' -ab 160k -ac 1 -ar 16000 -vn ' + outputFolder + file[len(inputFolder): -len('.mp4')] + '.wav'
-			subprocess.call(cmd, shell=True)
 
-	if (args.extract_image_kp):
+def getOriginalKeypoints(kp_features_mouth, N, tilt, mean):
+	# Denormalize the points
+	kp_dn = N * kp_features_mouth
+	# Add the tilt
+	x, y = kp_dn[:, 0], kp_dn[:, 1]
+	c, s = np.cos(tilt), np.sin(tilt)
+	x_dash, y_dash = x * c + y * s, -x * s + y * c
+	kp_tilt = np.hstack((x_dash.reshape((-1, 1)), y_dash.reshape((-1, 1))))
+	# Shift to the mean
+	kp = kp_tilt + mean
+	return kp
 
-		inputFolder = 'images/'
-		outputFolder = 'image_kp_raw/'
-		resumeFrom = 0
 
-		if not(os.path.exists(outputFolder)):
-			# Create directory
-			subprocess.call('mkdir -p ' + outputFolder, shell=True)
+def get_sec(time_str):
+	h, m, s = time_str.split(':')
+	return int(h) * 3600 + int(m) * 60 + float(s)
 
-		# directories = sorted(glob(inputFolder+'*/'))
-		directories = sorted(glob(inputFolder))
-		print(directories)
-		d = {}
-		print("Obtaining facial keypoints")
-		for idx, directory in tqdm(enumerate(directories[resumeFrom:])):
-			key = directory[len(inputFolder):-1]
-			imglist = sorted(glob(directory+'*.bmp'))
-			big_list = []
-			for file in tqdm(imglist):
-				
-				keypoints = get_facial_landmarks(file)
-				if not (keypoints.shape[0] == 1): # if there are some kp then
-					l = getKeypointFeatures(keypoints)
-					unit_kp, N, tilt, mean = l[0], l[1], l[2], l[3]
-					kp_mouth = unit_kp[48:68]
-					store_list = [kp_mouth, N, tilt, mean, unit_kp, keypoints]
-					prev_store_list = store_list
-					big_list.append(store_list)
-				else:
-					big_list.append(prev_store_list)
-			d[key] = big_list
 
-			saveFilename = outputFolder + 'kp' + str(idx+resumeFrom+1) + '.pickle'
-			oldSaveFilename = outputFolder + 'kp' + str(idx+resumeFrom-2) + '.pickle'
+####################################################################################
 
-			if not (os.path.exists(saveFilename)):
-				with open(saveFilename, "wb") as output_file:
-					pkl.dump(d, output_file)
-					print('Saved output for ', (idx+resumeFrom+1), ' file.')
-			else:
-				# Resume
-				with open(saveFilename, "rb") as output_file:
-					d = pkl.load(output_file)
-					print('Loaded output for ', (idx+resumeFrom+1), ' file.')
+# The model
+def LSTM_lipsync(in_shape=(n_batch, length, 26), out_shape=(length, 8)):
+	# model = Sequential()
+	# model.add(LSTM(256, batch_input_shape=in_shape, return_sequences=True)) #, stateful=True))
+	# model.add(TimeDistributed(Dense(out_shape[1])))
+	# model.compile(loss='mean_squared_error', optimizer='adam')
+	# print(model.summary())
+	# return model
 
-			# Keep removing stale versions of the files
-			if (os.path.exists(oldSaveFilename)):
-				cmd = 'rm -rf ' + oldSaveFilename
-				subprocess.call(cmd, shell=True)
+	model = Sequential()
+	model.add(LSTM(8, input_shape=(length, 26)))
+	model.compile(loss='mean_squared_error', optimizer='adam')
+	print(model.summary())
+	return model
 
-	if (args.extract_audio_kp):
 
-		inputFolder = 'audios/'
-		outputFolder = 'audio_kp/'
-		resumeFrom = 0
-		frame_rate = 5
-		kp_type = 'mel'
+def batchify(X, n_batch):  # X is a 3D array
+	X = np.array(X)
+	n = X.shape[0] % n_batch
+	# print('n:', n, 'sub:', n_batch-n)
+	Z = np.zeros((n_batch - n, length, X.shape[2]))
+	X = np.vstack((X, Z))
+	return X
 
-		if not(os.path.exists(outputFolder)):
-			# Create directory
-			subprocess.call('mkdir -p ' + outputFolder, shell=True)
 
-		filelist = sorted(glob(inputFolder+'*.wav'))
+# Get the data into proper format
+# i.e [samples, timesteps, features]
+# where num of samples should be integral multiple of n_batches
+def getData(audio_kp, video_kp, pca, nTrainingVideo):
+	# Total number of elements in each list
+	# print('len(audio):', len(audio_kp), 'len(video):', len(video_kp))
+	X, y = [], []  # Create the empty lists
+	# Get the common keys
+	keys_audio = audio_kp.keys()
+	keys_video = video_kp.keys()
+	keys = sorted(list(set(keys_audio).intersection(set(keys_video))))
+	# print('Length of common keys:', len(keys), 'First common key:', keys[0])
 
-		d = {}
+	for key in tqdm(keys[0:nTrainingVideo]):
+		audio = audio_kp[key]
+		video = video_kp[key]
+		# Get the lesser size of the two matrices
+		n_lesser = len(audio) if (len(audio) < len(video)) else len(video)
+		# Need to get smaller timesteps from this huge data
+		segregateTimesteps = int(np.floor((n_lesser - time_delay) / length))
+		# print('seg:', segregateTimesteps, 'n_lesser:', n_lesser, 'length:', length)
+		# Stuff chunks of this juicy data into the x and y
+		for i in range(segregateTimesteps):
+			X.append(audio[i * length + time_delay: (i + 1) * length + time_delay])
+			y.append(video[i * length: (i + 1) * length])
 
-		for idx, file in enumerate(tqdm(filelist[resumeFrom:])):
-			key = file[len(inputFolder):-len('.wav')]
+	# # normalize the dataset
+	# scalerX = MinMaxScaler(feature_range=(0, 1))
+	# scalerY = MinMaxScaler(feature_range=(0, 1))
 
-			if(kp_type == 'world'):
-				x, fs = sf.read(file)
-				# 2-1 Without F0 refinement
-				f0, t = pw.dio(x, fs, f0_floor=50.0, f0_ceil=600.0,
-								channels_in_octave=2,
-								frame_period=frame_rate,
-								speed=1.0)
-				sp = pw.cheaptrick(x, f0, t, fs)
-				ap = pw.d4c(x, f0, t, fs)
-				features = np.hstack((f0.reshape((-1, 1)), np.hstack((sp, ap))))
+	# X = np.array(X)
+	# X = X.reshape(X.shape[0]*X.shape[1], X.shape[2])
+	# y = np.array(y)
+	# y = y.reshape(y.shape[0]*y.shape[1], y.shape[2])
+	# # print('Shape of X:', X.shape)
 
-			elif (kp_type == 'mel'):
-				(rate, sig) = wav.read(file)
-				features = logfbank(sig,rate)
+	# X = scalerX.fit_transform(X)
+	# y = scalerY.fit_transform(y)
 
-			d[key] = features
+	# X = X.reshape(int(X.shape[0]/length), length, X.shape[1])
+	# y = y.reshape(int(y.shape[0]/length), length, y.shape[1])
 
-			saveFilename = outputFolder + 'audio_kp' + str(idx+resumeFrom+1) + '_' + kp_type + '.pickle'
-			oldSaveFilename = outputFolder + 'audio_kp' + str(idx+resumeFrom-2) + '_' + kp_type + '.pickle'
 
-			if not (os.path.exists(saveFilename)):
-				with open(saveFilename, "wb") as output_file:
-					pkl.dump(d, output_file)
-					# print('Saved output for', (idx+resumeFrom+1), 'file.')
-			else:
-				# Resume
-				with open(saveFilename, "rb") as output_file:
-					d = pkl.load(output_file)
-					print('Loaded output for ', (idx+resumeFrom+1), ' file.')
 
-			# Keep removing stale versions of the files
-			if (os.path.exists(oldSaveFilename)):
-				cmd = 'rm -rf ' + oldSaveFilename
-				subprocess.call(cmd, shell=True)
 
-		print('Saved Everything')
+	X = batchify(X, n_batch)
+	y = batchify(y, n_batch)
 
-	if (args.extract_pca):
+	n = X.shape[0]
+	val_flag = False
+	if n >= 5 * n_batch:  # this is where we have a validation set
+		split = int(n * 0.8)
+		split = int(np.ceil(split / n_batch) * n_batch)
+		val_flag = True
+	else:  # no validation set
+		split = n
 
-		inputFolder = 'image_kp_raw/'
-		outputFolder = 'pca/'
-		# numOfFiles = 1467 # First 20 videos
-		numOfFiles = 1
-		new_list = []
+	train_X = X[0:split]
+	val_X = X[split:]
+	train_y = y[0:split]
+	val_y = y[split:]
+	return train_X, train_y, val_X, val_y, val_flag
 
-		filename = inputFolder + 'kp' + str(numOfFiles) + '.pickle'
 
-		if not(os.path.exists(outputFolder)):
-			# Create directory
-			subprocess.call('mkdir -p ' + outputFolder, shell=True)
+def preparekpForPrediction(audio_kp):
+	# Need to get smaller timesteps from this huge data
+	segregateTimesteps = int(np.floor((audio_kp.shape[0] - time_delay) / length))
+	# Stuff chunks of this juicy data into the X
+	X = []
+	for i in range(segregateTimesteps):
+		X.append(audio_kp[i * length + time_delay: (i + 1) * length + time_delay, :])
+	X = np.array(X)
+	X = batchify(X, n_batch)
 
-		if (os.path.exists(filename)):
-			with open(filename, 'rb') as file:
-				big_list = pkl.load(file)
-			print('Keypoints file loaded')
+	return X
+
+
+def audioToPrediction(filename):
+	# Get audio features
+	(rate, sig) = wav.read(filename)
+	audio_kp = logfbank(sig, rate)
+	originalNumofPts = audio_kp.shape[0]
+	return preparekpForPrediction(audio_kp), originalNumofPts
+
+
+def subsample(y, fps_from=100.0, fps_to=29.97):
+	factor = int(np.ceil(fps_from / fps_to))
+	# Subsample the points
+	new_y = np.zeros((int(y.shape[0] / factor), 20, 2))  # (timesteps, 20) = (500, 20x2)
+	for idx in range(new_y.shape[0]):
+		if not (idx * factor > y.shape[0] - 1):
+			# Get into (x, y) format
+			new_y[idx, :, 0] = y[idx * factor, 0:20]
+			new_y[idx, :, 1] = y[idx * factor, 20:]
 		else:
-			print('Input keypoints not found')
-			sys.exit(0)
+			break
+	# print('Subsampled y:', new_y.shape)
+	new_y = [np.array(each) for each in new_y.tolist()]
+	# print(len(new_y))
+	return new_y
 
-		print('Unwrapping all items from the big list')
 
-		for key in tqdm(sorted(big_list.keys())):
-			for frame_kp in big_list[key]:
-				kp_mouth = frame_kp[0]
-				x = kp_mouth[:, 0].reshape((1, -1))
-				y = kp_mouth[:, 1].reshape((1, -1))
-				X = np.hstack((x, y)).reshape((-1)).tolist()
-				new_list.append(X)
+# Get the data into proper format
+# i.e [samples, timesteps, features]
+# where num of samples should be integral multiple of n_batches
+def getDataNormalized(audio_kp, video_kp, pca, nTrainingVideo):
+	# Total number of elements in each list
+	# print('len(audio):', len(audio_kp), 'len(video):', len(video_kp))
+	X, y = np.zeros((1, 26)), np.zeros((1, 8))  # Create the empty lists
+	# Get the common keys
+	keys_audio = audio_kp.keys()
+	keys_video = video_kp.keys()
+	keys = sorted(list(set(keys_audio).intersection(set(keys_video))))
+	# print('Length of common keys:', len(keys), 'First common key:', keys[0])
 
-		X = np.array(new_list)
+	for key in tqdm(keys[0:nTrainingVideo]):
+		audio = audio_kp[key]
+		video = video_kp[key]
+		# Get the lesser size of the two matrices
+		n_lesser = len(audio) if (len(audio) < len(video)) else len(video)
 
-		pca = PCA(n_components=8)
-		pca.fit(X)
-		with open(outputFolder + 'pca' + str(numOfFiles) + '.pickle', 'wb') as file:
-			pkl.dump(pca, file)
+	# print('audio shape:', audio.shape)
+
+''''''
+inputFolder = 'images/'
+outputFolderKp = 'a2key_data/'
+saveFilename = outputFolderKp + 'kp_test.pickle'
+outputFolderForpix2pix = 'pix2pix_input/'
+inputToA2KeyModel = 'a2key_data/images'
+# print("something")
+# cmd = 'rm -rf ' + inputFolder + '*-square-x-100.jpg'
+# subprocess.call(cmd, shell=True)
+
+if not(os.path.exists(outputFolderForpix2pix)):
+	# Create directory
+	subprocess.call('mkdir -p ' + outputFolderForpix2pix, shell=True)
+if not(os.path.exists(outputFolderKp)):
+	# Create directory
+	subprocess.call('mkdir -p ' + outputFolderKp, shell=True)
+if not(os.path.exists(inputToA2KeyModel)):
+	# Create directory
+	subprocess.call('mkdir -p ' + inputToA2KeyModel, shell=True)
+# print("something")
+searchNames = inputFolder + '*/' + '*.jpg'
+# print(searchNames)
+filenames = sorted(glob(searchNames))
+# the facial landmark predictor
+detector = dlib.get_frontal_face_detector()
+# predictor = dlib.shape_predictor(args["shape_predictor"])
+predictor = dlib.shape_predictor("shape_predictor_68_face_landmarks.dat")
+d = []
+for file in tqdm(filenames):
+	img = cv2.imread(file)
+	x = int(np.floor((img.shape[1]-256)/2))
+
+	# Crop to a square image
+	crop_img = img
+	# initialize dlib's face detector (HOG-based) and then create
+	image = imutils.resize(img, width=500)
+	gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+	# detect faces in the grayscale image
+	rects = detector(gray, 1)
+	if len(rects) == 1:
+		tlx, tly, brx, bry = 0, 0, 0, 0
+		cx, cy = 1, 1
+        # loop over the face detections
+		for (i, rect) in enumerate(rects):
+            # determine the facial landmarks for the face region, then
+            # convert the facial landmark (x, y)-coordinates to a NumPy
+            # array
+			shape = predictor(gray, rect)
+			shape = face_utils.shape_to_np(shape)
+
+            # convert dlib's rectangle to a OpenCV-style bounding box
+            # [i.e., (x, y, w, h)], then draw the face bounding box
+			(x, y, w, h) = face_utils.rect_to_bb(rect)
+            # cv2.rectangle(image, (x, y), (x + w, y + h), (0, 255, 0), 2)
+
+            # show the face number
+            # cv2.putText(image, "Face #{}".format(i + 1), (x - 10, y - 10),
+            #             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+			counter = 0
+
+            # loop over the (x, y)-coordinates for the facial landmarks
+            # and draw them on the image
+			tempy = 0
+			for (x, y) in shape:
+
+				counter += 1
+				if (counter == 3):
+                    # tempy = y
+					tlx, tly = x, y
+                # if (counter == 4):
+                #     tlx, tly = x, int(y - (y - tempy)*0.15)
+				if counter == 13:
+					brx = x
+				if counter == 11:
+					bry = y
+                # cv2.putText(image, "{}".format(counter), (x - 10, y - 10),
+                #             cv2.FONT_HERSHEY_SIMPLEX, 0.25, (0, 0, 0), 1)
+                # cv2.circle(image, (x, y), 1, (0, 0, 255), -1)
+				if counter == 31:
+					cx, cy = x, y
+
+			counter = 0
 	
-		with open(outputFolder + 'explanation' + str(numOfFiles) + '.pickle', 'wb') as file:
-			pkl.dump(pca.explained_variance_ratio_, file)
+		crop_img = image[max(0, (cy - 128)):max(256, (cy + 128)), max(0, (cx -128)):max(256, (cx + 128))]
+		# crop_img = img[max(0, (cy - 128)):max(256, (cy + 128)), max(0, (cx - 128)):max(256, (cx + 128))]
+		outputName = file[0:-len('.jpg')]+'-square-x-100.jpg'
+		# print(outputName)
+		# cv2.imwrite(outputName, crop_img)
 
-		print('Explanation for each dimension:', pca.explained_variance_ratio_)
-		print('Total variance explained:', 100*sum(pca.explained_variance_ratio_))
-		print('')
-		print('Upsampling...')
+		# extract the keypoints
+		keypoints = get_facial_landmarks_img(crop_img)
+		l = getKeypointFeatures(keypoints)
+		if l != None:
+			unit_kp, N, tilt, mean = l[0], l[1], l[2], l[3]
+			kp_mouth = unit_kp[48:68]
+			store_list = [kp_mouth, N, tilt, mean, unit_kp, keypoints]
+			d.append(store_list)
 
-		# Upsample the lip keypoints
-		upsampled_kp = {}
-		for key in tqdm(sorted(big_list.keys())):
-			# print('Key:', key)
-			nFrames = len(big_list[key])
-			factor = int(np.ceil(100/29.97))
-			# Create the matrix
-			new_unit_kp = np.zeros((int(factor*nFrames), big_list[key][0][0].shape[0], big_list[key][0][0].shape[1]))
-			new_kp = np.zeros((int(factor*nFrames), big_list[key][0][-1].shape[0], big_list[key][0][-1].shape[1]))
+			# create a patch based on the tilt, mean and the size of face
+			mean_x, mean_y = int(mean[0]), int(mean[1])
+			size = int(N/15)
+			aspect_ratio_mouth = 1.8
+			# print('mean (y, x):', mean_y, mean_x, 'size:', size)
 
-			# print('Shape of new_unit_kp:', new_unit_kp.shape, 'new_kp:', new_kp.shape)
+			patch_img = crop_img.copy()
+			# patch = np.zeros_like(patch_img[ mean_y-size: mean_y+size, mean_x-size: mean_x+size ])
+			patch_img[ mean_y-size: mean_y+size, mean_x-int(aspect_ratio_mouth*size):
+				mean_x+int(aspect_ratio_mouth*size) ] = 0
+			cv2.imwrite(inputToA2KeyModel + file[len(inputFolder):-len('.jpg')] + '.png', patch_img)
 
-			for idx, frame in enumerate(big_list[key]):
-				# Create two lists, one with original keypoints, other with unit keypoints
-				new_kp[(idx*(factor)), :, :] = frame[-1]
-				new_unit_kp[(idx*(factor)), :, :] = frame[0]
 
-				if (idx > 0):
-					start = (idx-1)*factor + 1
-					end = idx*factor
-					for j in range(start, end):
-						new_kp[j, :, :] = new_kp[start-1, :, :] + ((new_kp[end, :, :] - new_kp[start-1, :, :])*(np.float(j+1-start)/np.float(factor)))
-						# print('')
-						l = getKeypointFeatures(new_kp[j, :, :])
-						# print('')
-						new_unit_kp[j, :, :] = l[0][48:68, :]
-			
-			upsampled_kp[key] = new_unit_kp
+			drawLips(keypoints, patch_img)
 
-		# Use PCA to de-correlate the points
-		d = {}
-		keys = sorted(upsampled_kp.keys())
-		for key in tqdm(keys):
-			x = upsampled_kp[key][:, :, 0]
-			y = upsampled_kp[key][:, :, 1]
-			X = np.hstack((x, y))
-			X_trans = pca.transform(X)
-			d[key] = X_trans
+			# Slap the other original image onto this
+			patch_img = np.hstack((patch_img, crop_img))
 
-		with open(outputFolder + 'pkp' + str(numOfFiles) + '.pickle', 'wb') as file:
-			pkl.dump(d, file)
-		print('Saved Everything')
+			outputNamePatch = outputFolderForpix2pix + file[len(inputFolder):-len('.jpg')] + '.png'
+			cv2.imwrite(outputNamePatch, patch_img)
+				# cv2.rectangle(image, (tlx, tly), (brx, bry), (0, 0, 0), thickness=-1)
+    
+
+	else:
+		pass
+
+
+if not(os.path.exists(saveFilename)):
+	os.makedirs(os.path.dirname(saveFilename), exist_ok=True)
+	pkl.dump(d, open(saveFilename, "wb"))
+else:
+	# save the extracted keypoints
+	with open(saveFilename, "wb") as output_file:
+		pkl.dump(d, output_file)
+
+
+	
+
